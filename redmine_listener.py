@@ -58,7 +58,7 @@ class Run(object):
             time.sleep(self.seconds_between_redmine_checks)
 
     def make_call(self):
-        self.t.time_print("Checking for clark requests...")
+        self.t.time_print("Checking for metadata requests...")
 
         data = self.redmine.get_new_issues('cfia')
 
@@ -66,7 +66,7 @@ class Run(object):
         import re
         prog = re.compile(r'^assembly&metadata-\d{2}(\d{2}-\d{1,2}-\d{1,2})$')
         for issue in data['issues']:
-            if issue['id'] not in self.responded_issues and issue['status']['name'] == 'New':
+            if issue['status']['name'] == 'New':
                 # Get rid of caps and spaces and match
                 subj = ''.join(issue['subject'].lower().split())
                 result = re.fullmatch(prog, subj)
@@ -82,14 +82,20 @@ class Run(object):
             self.respond_to_issue(found.pop(len(found)-1))
 
         # Check on old jobs
+        self.t.time_print("Checking on old issues: ")
         for job in self.queue:
+            msg = str(job['id']) + ': '
             if self.check_assembly(job['folder']):
+                'Uploading.'
                 results_zip = self.retrieve_files(job)
 
                 response = "Retrieved data. Also stored at %s." % results_zip
                 self.redmine.upload_file(results_zip, job['id'], 'application/zip', status_change=4,
-                                         additional_notes=response)
+                                         additional_notes=response + self.bottext)
                 self.queue.remove(job)
+            else:
+                msg += 'Not ready.'
+            self.t.time_print(msg)
 
     def respond_to_issue(self, job):
         # Run extraction
@@ -98,29 +104,33 @@ class Run(object):
                                                                                            str(job['folder'])))
 
             if self.check_assembly(job['folder']):
+                self.t.time_print('Uploading files...')
                 # Retrieve
                 results_zip = self.retrieve_files(job)
 
                 response = "Retrieved data. Also stored at %s." % results_zip
-                self.redmine.upload_file(results_zip, job['id'], 'application/zip', status_change=4, additional_notes=response)
+                self.redmine.upload_file(results_zip, job['id'], 'application/zip', status_change=4,
+                                         additional_notes=response + self.bottext)
             else:
                 # response
                 response = "Waiting for assembly to complete..."
-                self.redmine.update_issue(job['id'], notes=response, status_change=2)
+                self.t.time_print(response)
                 self.t.time_print("Adding to queue")
                 self.queue.append(job)
                 self.queue_loader.queue = self.queue
                 self.queue_loader.dump()
 
                 # Set the issue to in progress
-                self.redmine.update_issue(job['id'], notes=response, status_change=2)
+                self.redmine.update_issue(job['id'], notes=response + self.bottext, status_change=2)
 
     def check_assembly(self, datestr):
         directory = os.path.join(self.nas_mnt, 'WGSspades', datestr + '_Assembled')
         return bool(os.path.isdir(directory))
 
     def retrieve_files(self, job):
-        results_zip = os.path.join(self.nas_mnt, 'bio_requests', job['id'] + '.zip')
+        results_folder = os.path.join(self.nas_mnt, 'bio_requests', str(job['id']))
+        os.makedirs(results_folder)
+        results_zip = os.path.join(results_folder, str(job['id']) + '.zip')
         directory = os.path.join(self.nas_mnt, 'WGSspades', job['folder'] + '_Assembled')
         self.zip_results(os.path.join(directory, 'reports'), results_zip)
         return results_zip
@@ -137,7 +147,7 @@ class Run(object):
 
         zipf = zipfile.ZipFile(outfolder, 'w', zipfile.ZIP_DEFLATED)
         for file in os.listdir(r_folder):
-            zipf.write(file)
+            zipf.write(os.path.join(r_folder, file))
             self.t.time_print("Zipped %s" % file)
 
         zipf.close()
@@ -185,7 +195,7 @@ class Run(object):
 
         # Save issues found to a queue (load existing issues if bot needs to restart)
         self.queue_loader = SaveLoad(os.path.join(self.script_dir, 'queue.json'), create=True)
-        self.queue = list(self.queue_loader.get('queue', default=[], ask=False))
+        self.queue = self.queue_loader.get('queue', default=[], ask=False)
 
         # Get encrypted api key from config
         # Load the config
@@ -200,6 +210,8 @@ class Run(object):
         self.key = 'Sixteen byte key'
 
         self.redmine = None
+
+        self.bottext = '\n\n_I am a bot. This action was performed automatically._'
 
         try:
             self.main(force)
